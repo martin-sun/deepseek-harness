@@ -21,7 +21,7 @@ with DeepSeekHarness(
     dsh_home="/absolute/path/to/isolated-dsh-home",
     cwd="/absolute/path/to/workspace",
     provider="deepseek-official",
-    model="deepseek-v4-flash",
+    model="deepseek-flash",
     reasoning_effort="max",
     max_tokens=49_152,
 ) as harness:
