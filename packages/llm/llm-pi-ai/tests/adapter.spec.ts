@@ -13,6 +13,7 @@ import LlmRuntime, { createToolResultMessage, createUserMessage, CONTEXT_WINDOW_
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
+import { getGlobalDispatcher } from 'undici'
 import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { DEFAULT_MAX_REQUEST_IMAGE_BYTES, resolveProfiles } from '../src/config.ts'
 import { memoryAuth } from './auth-double.ts'
@@ -80,7 +81,7 @@ describe('PiAiAdapter provider routing', () => {
       model: 'deepseek-flash',
       messages: [createUserMessage({
         content: [{ type: 'text', text: 'hi' }],
-        source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+        source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' },
       })],
     })
     expect(result.message.content).toEqual([{ type: 'text', text: 'hello' }])
@@ -319,7 +320,7 @@ describe('PiAiAdapter provider routing', () => {
       model: 'gpt-4.1',
       messages: [createUserMessage({
         content: [{ type: 'image', attachment: ref }],
-        source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+        source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' },
       })],
     })
 
@@ -428,6 +429,16 @@ describe('PiAiAdapter provider routing', () => {
 
     expect(server.paths).toEqual(['/chat/completions'])
     expect(server.closedResponses).toBe(1)
+  })
+
+  it('recycles the outbound dispatcher after a transport-class stream failure', async () => {
+    const before = getGlobalDispatcher()
+    const server = await mockServer([{ events: textEvents, delayMs: 200 }])
+    const ctx = await harness(server.url, { streamIdleTimeoutMs: 20 })
+
+    const result = await assemble(ctx, { model: 'deepseek-flash', messages: [] })
+    expect(result.finish).toMatchObject({ kind: 'error', failure: { code: 'TIMEOUT' } })
+    expect(getGlobalDispatcher()).not.toBe(before)
   })
 })
 
@@ -914,7 +925,7 @@ describe('provider profile lifecycle', () => {
       model: 'deepseek-v4-pro',
       messages: [createUserMessage({
         content: [{ type: 'image', attachment: IMAGE_REF }],
-        source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+        source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' },
       })],
     })).rejects.toMatchObject({
       code: 'UNSUPPORTED_CONTENT',
@@ -925,7 +936,7 @@ describe('provider profile lifecycle', () => {
       model: 'gpt-4.1',
       messages: [createUserMessage({
         content: [{ type: 'image', attachment: IMAGE_REF }],
-        source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+        source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' },
       })],
     })).rejects.toMatchObject({ code: 'UNSUPPORTED_CONTENT' })
     await expect(drain({

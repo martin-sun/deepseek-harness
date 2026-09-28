@@ -38,6 +38,12 @@ let inheritedProxyEnv: Readonly<Record<string, string | undefined>> | undefined
 let installed: Dispatcher | undefined
 
 /**
+ * The dispatcher this package last placed as undici's global, whether the active policy proxied or
+ * not. Disposal and {@link recycleOutboundHttp} close this one and never Node's stock agent.
+ */
+let owned: Dispatcher | undefined
+
+/**
  * How this process must send one request.
  *
  * A caller that branches on the answer needs the transport that answer assumed, or an install or
@@ -197,12 +203,15 @@ async function installGlobalProxy(policy: ProxyPolicy): Promise<() => Promise<vo
     undici.setGlobalDispatcher(direct)
     active = policy
     installed = undefined
+    owned = direct
     return async () => {
       undici.setGlobalDispatcher(previous)
       active = previousPolicy
       installed = previousInstalled
+      const toClose = owned
+      owned = undefined
       restoreEnv?.()
-      await direct.close()
+      if (toClose !== undefined) await toClose.close()
     }
   }
   const restoreEnv = applyPolicyEnv(policy)
@@ -213,12 +222,18 @@ async function installGlobalProxy(policy: ProxyPolicy): Promise<() => Promise<vo
   setGlobalDispatcher(agent)
   active = policy
   installed = agent
+  owned = agent
   return async () => {
     setGlobalDispatcher(previousDispatcher)
     active = previousPolicy
     installed = previousInstalled
+    const toClose = owned
+    owned = undefined
     restoreEnv()
-    await agent.close()
+    // Close whatever this install still owns — the original agent, or a
+    // recycle's replacement when one swapped the pool mid-session. A recycle
+    // already closed the agent it replaced, so `owned` is the only close target.
+    if (toClose !== undefined) await toClose.close()
   }
 }
 
@@ -312,4 +327,67 @@ export async function installProxyFromEnvironment(
  */
 export function clearedProxyEnv(): Record<string, undefined> {
   return Object.fromEntries(PROXY_ENV_NAMES.map(name => [name, undefined]))
+}
+
+/**
+ * Discard this process's pooled outbound sockets and install a fresh dispatcher for the active
+ * policy.
+ *
+ * A mid-stream socket drop can leave undici's pool holding connections that fail every later request
+ * with a bare connection error until the process restarts. Recycling rebuilds from {@link active} —
+ * the same proxy factory when a policy is installed, a direct agent otherwise — so the next request
+ * dials again instead of reusing a poisoned socket. Only a dispatcher this package installed is
+ * closed; Node's stock global agent is left alone until a recycle takes ownership of the slot.
+ */
+export async function recycleOutboundHttp(): Promise<void> {
+  const undici = await import('undici')
+  const policy = active
+  const previousOwned = owned
+  const next = policy !== undefined && policy.source !== 'none'
+    ? await createPolicyDispatcher(policy)
+    : new undici.Agent()
+  undici.setGlobalDispatcher(next)
+  installed = policy !== undefined && policy.source !== 'none' ? next : undefined
+  owned = next
+  if (previousOwned !== undefined && previousOwned !== next) {
+    await previousOwned.close()
+  }
+}
+
+/**
+ * This process's outbound `fetch`, with {@link recycleOutboundHttp} after a connection-layer failure.
+ *
+ * SDKs that accept a custom fetch (pi-ai's OpenAI/Anthropic clients among them) should receive this
+ * instead of `globalThis.fetch`, so a request that never reaches the wire — or a stream that dies
+ * mid-body — cannot leave the shared pool sticking every later attempt. Mid-stream body errors are
+ * not thrown back through `fetch`; callers that classify those still call {@link recycleOutboundHttp}
+ * from their failure path.
+ *
+ * @returns a fetch bound to the policy dispatcher, recycling it on connection-layer failures.
+ */
+export function outboundFetch(): typeof globalThis.fetch {
+  return async (input, init) => {
+    try {
+      return await fetch(input, init)
+    } catch (error: unknown) {
+      if (isConnectionLayerFailure(error)) {
+        try {
+          await recycleOutboundHttp()
+        } catch (_recycleFailed) {
+          // The original transport failure is what the caller must see; a failed recycle is secondary.
+        }
+      }
+      throw error
+    }
+  }
+}
+
+/** Whether `error` is the undici/fetch connection family this package recycles after. */
+function isConnectionLayerFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const cause = 'cause' in error ? error.cause : undefined
+  const parts = [error.message, error.name, cause instanceof Error ? `${cause.name} ${cause.message}` : '']
+  const text = parts.join(' ')
+  return /connection error|fetch failed|terminated|premature close|socket|ECONN|EPIPE|ENOTFOUND|EAI_AGAIN|other side closed/i
+    .test(text)
 }

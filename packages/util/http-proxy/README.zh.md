@@ -35,6 +35,8 @@ kind: "package-reference"
 |---|---|
 | 普通请求，或最终落到 `globalThis.fetch` 的 SDK | 什么都不用——全局 dispatcher 已经在路由它 |
 | 需要按“这次请求是否走代理”分支的调用 | `proxyRouteFor(url)` |
+| 接受自定义 `fetch` 的 SDK（pi-ai 的 OpenAI/Anthropic 客户端） | 传入 `outboundFetch()`，连接层失败时回收连接池 |
+| 已判定为流中传输故障的调用点 | 下次尝试前调用 `recycleOutboundHttp()` |
 | 接受自有代理 URL 的 SDK | `proxyRouteFor(url)`，把 `route.proxy` 传进去 |
 | 由你自己构造环境的 spawn | 把 `proxyEnvironmentForChild()` 应用到该 spawn（`undefined` 表示删除） |
 | 必须连到自带 fixture（测试前置数据）服务器的 harness | 把 `clearedProxyEnv()` 应用到该 spawn |

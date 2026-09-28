@@ -37,6 +37,7 @@ import type {
   SimpleStreamOptions,
   ThinkingLevel,
 } from '@earendil-works/pi-ai'
+import { outboundFetch, recycleOutboundHttp } from '@deepseek-ai/dsh-http-proxy'
 import {
   attributionHeaders,
   contentHasImage,
@@ -45,6 +46,7 @@ import {
   ReasoningEffortId,
 } from '@deepseek-ai/dsh-llm'
 import type {
+  FinishReason,
   GenerateOptions,
   ImageAttachmentAccess,
   LlmModelInfo,
@@ -126,6 +128,8 @@ function profileOptions(
     ...profile.transport === undefined ? {} : { transport: profile.transport },
     ...profile.timeoutMs === undefined ? {} : { timeoutMs: profile.timeoutMs },
     ...profile.websocketConnectTimeoutMs === undefined ? {} : { websocketConnectTimeoutMs: profile.websocketConnectTimeoutMs },
+    // Policy-aware fetch with pool recycling on connection-layer failures.
+    fetch: outboundFetch(),
     // The agent recovery layer owns visible attempts; one adapter call is one SDK attempt.
     maxRetries: 0,
   }
@@ -354,6 +358,7 @@ export class PiAiAdapter extends LlmAdapter {
     const streamIdleTimeoutMs = profile.streamIdleTimeoutMs
     using watchdog = idleWatchdog(upstream, streamIdleTimeoutMs, 'LLM_STREAM_IDLE_TIMEOUT')
 
+    let transportFailed = false
     try {
       const containsImage = options.messages.some(message => contentHasImage(message.content))
       if (containsImage && !model.input.includes('image')) {
@@ -398,6 +403,9 @@ export class PiAiAdapter extends LlmAdapter {
             exhausted = true
             return
           }
+          if (result.value.type === 'finish' && isTransportFinish(result.value.reason)) {
+            transportFailed = true
+          }
           yield result.value
         }
       } finally {
@@ -412,14 +420,39 @@ export class PiAiAdapter extends LlmAdapter {
       }
     } catch (error: unknown) {
       if (timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT') !== undefined) {
+        transportFailed = true
         throw new LlmError(`pi-ai stream idle timeout after ${streamIdleTimeoutMs}ms`, 'TIMEOUT', { cause: error })
       }
       if (options.signal?.aborted) {
         throw new LlmError('pi-ai request aborted by caller', 'ABORTED', { cause: error })
       }
+      if (isTransportFailure(error)) transportFailed = true
       throw error
     } finally {
       consumer.abort('pi-ai stream consumer stopped')
+      if (transportFailed) {
+        try {
+          await recycleOutboundHttp()
+        } catch (_recycleFailed) {
+          // The transport failure already in flight is what the caller sees; recycle is best-effort.
+        }
+      }
     }
   }
+}
+
+/** Whether a finish reason is a transport-layer failure that can poison pooled sockets. */
+function isTransportFinish(reason: FinishReason): boolean {
+  return reason.kind === 'error'
+    && (reason.failure.code === 'TRANSPORT' || reason.failure.code === 'TIMEOUT' || reason.failure.code === 'STREAM_CLOSED')
+}
+
+/** Whether a thrown error is a transport-layer failure that can poison pooled sockets. */
+function isTransportFailure(error: unknown): boolean {
+  if (error instanceof LlmError) {
+    return error.code === 'TRANSPORT' || error.code === 'TIMEOUT' || error.code === 'STREAM_CLOSED'
+  }
+  return error instanceof Error
+    && /connection error|fetch failed|terminated|premature close|socket|ECONN|EPIPE|other side closed/i
+      .test(`${error.name} ${error.message}`)
 }

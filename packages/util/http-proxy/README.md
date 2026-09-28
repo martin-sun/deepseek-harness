@@ -34,6 +34,8 @@ Plain `fetch()` is proxied, and so is any SDK that reaches `globalThis.fetch` â€
 | You are writing | Use |
 |---|---|
 | A plain request, or an SDK that reaches `globalThis.fetch` | nothing â€” the global dispatcher already routes it |
+| An SDK that accepts a custom `fetch` (pi-ai's OpenAI/Anthropic clients) | pass `outboundFetch()` so connection-layer failures recycle the pool |
+| A call site that classified a mid-stream transport failure | `recycleOutboundHttp()` before the next attempt |
 | A call that must branch on whether this request is proxied | `proxyRouteFor(url)` |
 | An SDK that takes a proxy URL of its own | `proxyRouteFor(url)`, and pass `route.proxy` |
 | A spawn whose environment you build yourself | apply `proxyEnvironmentForChild()` to it (`undefined` means remove) |
