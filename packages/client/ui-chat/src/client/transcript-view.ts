@@ -4,8 +4,13 @@ import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import {
   DEFAULT_TRANSCRIPT_VIEW_MODE, LEGACY_TRANSCRIPT_VIEW_MODE, LEGACY_EXPANDED_TRANSCRIPT_VIEW_MODE, TRANSCRIPT_VIEW_FIELD,
-  type ChatSettings, type TranscriptViewMode,
+  TRANSCRIPT_VIEW_MODES, type ChatSettings, type TranscriptViewMode,
 } from '../chat-settings.ts'
+
+/** Whether a stored value is one of the four current work-details modes. */
+function isTranscriptViewMode(value: unknown): value is TranscriptViewMode {
+  return (TRANSCRIPT_VIEW_MODES as readonly unknown[]).includes(value)
+}
 
 /** Live work-details preference consumed by Chat and its Settings row. */
 export class TranscriptViewPolicy {
@@ -45,7 +50,8 @@ export class TranscriptViewPolicy {
     if (section === undefined) return
     const saved = section.transcriptView
     const mode = saved === LEGACY_TRANSCRIPT_VIEW_MODE || saved === LEGACY_EXPANDED_TRANSCRIPT_VIEW_MODE
-      ? 'detailed' : saved ?? this.defaultMode
+      ? 'detailed'
+      : isTranscriptViewMode(saved) ? saved : this.defaultMode
     if (this.mode.getSnapshot() !== mode) this.mode.set(mode)
   }
 }

@@ -73,6 +73,20 @@ describe('TranscriptViewPolicy', () => {
     expect(host.set).not.toHaveBeenCalled()
     policy.dispose()
   })
+
+  it.each(['dense', 'huge', 42, true, {}, []] as const)('falls back to the client default for unrecognized value %j', (saved) => {
+    const host = stubConfigForm<ChatSettings>()
+    const policy = new TranscriptViewPolicy(host.scope, 'standard')
+    host.publish({
+      status: 'ready',
+      value: { linkOpening: 'sidebar', transcriptView: saved as never, performanceUsage: 'detailed' },
+      revision: 1,
+      writable: true,
+    })
+    expect(policy.mode.getSnapshot()).toBe('standard')
+    expect(host.set).not.toHaveBeenCalled()
+    policy.dispose()
+  })
 })
 
 it('releases its subscription when the consuming plugin unloads', () => {
