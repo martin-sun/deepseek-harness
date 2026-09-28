@@ -6,8 +6,10 @@ import { getGlobalDispatcher } from 'undici'
 import {
   clearedProxyEnv,
   installProxyFromEnvironment,
+  outboundFetch,
   proxyEnvironmentForChild,
   proxyRouteFor,
+  recycleOutboundHttp,
 } from '../src/index.ts'
 import { PROXY_ENV_NAMES } from '../src/policy.ts'
 
@@ -454,5 +456,56 @@ describe('clearedProxyEnv', () => {
     const cleared = clearedProxyEnv()
     expect(Object.keys(cleared).sort()).toEqual([...PROXY_ENV_NAMES].sort())
     expect(Object.values(cleared).every(value => value === undefined)).toBe(true)
+  })
+})
+
+describe('recycleOutboundHttp', () => {
+  it('installs a fresh dispatcher that still routes through the active proxy', async () => {
+    const { dispose } = await install(proxyAll())
+    try {
+      await fetch(proxyTarget).then(r => r.text())
+      const before = proxied.length
+      await recycleOutboundHttp()
+      await expect(fetch(proxyTarget).then(r => r.text())).resolves.toBe('VIA-PROXY')
+      expect(proxied.length).toBe(before + 1)
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('takes ownership of a direct agent when no policy is installed', async () => {
+    await withCleanProxyEnv(async () => {
+      const before = getGlobalDispatcher()
+      await recycleOutboundHttp()
+      const after = getGlobalDispatcher()
+      expect(after).not.toBe(before)
+      // Loopback stays direct under the recycled agent, matching the stock dispatcher.
+      await expect(fetch(originUrl).then(r => r.text())).resolves.toBe('DIRECT')
+    })
+  })
+})
+
+describe('outboundFetch', () => {
+  it('recycles the pool after a connection-layer failure and rethrows the original error', async () => {
+    await withCleanProxyEnv(async () => {
+      await recycleOutboundHttp()
+      const first = getGlobalDispatcher()
+      const fetchThrough = outboundFetch()
+      // An unresolvable host is a connection-layer failure undici surfaces as TypeError.
+      await expect(fetchThrough('http://definitely-not-a-real-host.invalid/')).rejects.toThrow()
+      expect(getGlobalDispatcher()).not.toBe(first)
+    })
+  })
+
+  it('leaves the dispatcher alone after a successful response', async () => {
+    const { dispose } = await install(proxyAll())
+    try {
+      const first = getGlobalDispatcher()
+      const fetchThrough = outboundFetch()
+      await expect(fetchThrough(proxyTarget).then(r => r.text())).resolves.toBe('VIA-PROXY')
+      expect(getGlobalDispatcher()).toBe(first)
+    } finally {
+      await dispose()
+    }
   })
 })

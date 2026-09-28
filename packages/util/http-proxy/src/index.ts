@@ -10,14 +10,18 @@
  * for a composition to mount, swap, or scope.
  *
  * Four functions, one per way a caller needs the policy — install it, ask how to send one request,
- * build a child's environment, and strip the ambient one for a replay.
+ * build a child's environment, and strip the ambient one for a replay. `outboundFetch` and
+ * `recycleOutboundHttp` cover the fifth need: SDKs that take a custom `fetch`, and recovery after a
+ * mid-stream socket drop would otherwise stick every later request until the process restarts.
  * @module @deepseek-ai/dsh-http-proxy
  */
 
 export {
   clearedProxyEnv,
   installProxyFromEnvironment,
+  outboundFetch,
   proxyEnvironmentForChild,
   proxyRouteFor,
+  recycleOutboundHttp,
   type ProxyRoute,
 } from './install.ts'
